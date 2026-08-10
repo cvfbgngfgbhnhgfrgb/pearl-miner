@@ -48,14 +48,23 @@ def _backend_available(name: str) -> bool:
 
 
 def _make_matmul(backend: str):
-    """Return (dot, to_cpu_uint32_xor_rows, add) helpers for the backend."""
+    """Return (dot, acc, xor_rows, to_cpu) helpers for the backend.
+
+    CUDA has NO int32 GEMM kernel ("addmm_cuda not implemented for 'Int'"),
+    so on torch we compute each rank-sized chunk in float32 and convert back
+    to int32. This is bit-exact: inputs are bounded by ±127, so a rank=128
+    chunk dot-product is at most 128*127*127 ~= 2.1e6 < 2^24, meaning every
+    partial sum is exactly representable in float32. Accumulation across
+    chunks happens in int32 (elementwise add IS supported on CUDA).
+    """
     if backend == "torch":
         import torch
 
         def dot(A, B):
-            a = torch.from_numpy(np.ascontiguousarray(A)).to("cuda" if torch.cuda.is_available() else "cpu")
-            b = torch.from_numpy(np.ascontiguousarray(B)).to(a.device)
-            return torch.matmul(a.to(torch.int32), b.to(torch.int32))
+            dev = "cuda" if torch.cuda.is_available() else "cpu"
+            a = torch.from_numpy(np.ascontiguousarray(A)).to(dev).to(torch.float32)
+            b = torch.from_numpy(np.ascontiguousarray(B)).to(dev).to(torch.float32)
+            return torch.matmul(a, b).to(torch.int32)
 
         def acc(acc, chunk):
             return acc + chunk
