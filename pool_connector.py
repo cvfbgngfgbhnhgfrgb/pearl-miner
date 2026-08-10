@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 
 from pearlhash.stratum import StratumClient, build_submit_params, parse_pool_url
@@ -139,12 +140,12 @@ def main(argv=None):
 
     # ---- 3. job -> jobs.txt ----------------------------------------------
     last_written_job_id = None
+    bus_lock = threading.Lock()
 
     def publish_job(job: dict):
         nonlocal last_written_job_id
         if job.get("job_id") == last_written_job_id:
             return
-        last_written_job_id = job.get("job_id")
         payload = {
             "job_id": job.get("job_id"),
             "header": job.get("header"),
@@ -154,9 +155,14 @@ def main(argv=None):
             "received_ts": job.get("received_ts"),
             "profile": profile,
         }
-        bus.write_text("jobs.txt", json.dumps(payload, separators=(",", ":")))
-        log.info("published job %s (height=%s) -> jobs.txt",
-                 job.get("job_id"), job.get("height"))
+        with bus_lock:
+            try:
+                bus.write_text("jobs.txt", json.dumps(payload, separators=(",", ":")))
+                last_written_job_id = job.get("job_id")
+                log.info("published job %s (height=%s) -> jobs.txt",
+                         job.get("job_id"), job.get("height"))
+            except Exception as e:
+                log.warning("failed to publish job %s: %s", job.get("job_id"), e)
 
     for c in clients:
         c.on_job = publish_job
@@ -176,34 +182,32 @@ def main(argv=None):
             lines = [l for l in content.splitlines() if l.strip()]
             if len(lines) <= processed_lines:
                 continue
-            new_lines = lines[processed_lines:]
-            for ln in new_lines:
+            with bus_lock:
+                for ln in new_lines:
+                    try:
+                        share = json.loads(ln)
+                    except Exception:
+                        log.warning("skipping unparseable share line: %.120s", ln)
+                        continue
+                    rig = share.get("rig", "rig1")
+                    worker = f"{args.wallet}.{rig}"
+                    client = next((c for c in clients if c.worker == worker), clients[0])
+                    job = client.job or {}
+                    params = build_submit_params(job, share)
+                    log.info("submitting share rig=%s job=%s nonce=%s",
+                             rig, share.get("job_id"), share.get("nonce"))
+                    try:
+                        resp = client.submit(params)
+                        log.info("pool response: result=%s error=%s",
+                                 resp.get("result"), resp.get("error"))
+                    except Exception as e:
+                        log.warning("submit failed: %s", e)
+                # clear the file (keep only lines appended after our read)
                 try:
-                    share = json.loads(ln)
-                except Exception:
-                    log.warning("skipping unparseable share line: %.120s", ln)
-                    continue
-                rig = share.get("rig", "rig1")
-                worker = f"{args.wallet}.{rig}"
-                client = next((c for c in clients if c.worker == worker), clients[0])
-                job = client.job or {}
-                params = build_submit_params(job, share)
-                log.info("submitting share rig=%s job=%s nonce=%s",
-                         rig, share.get("job_id"), share.get("nonce"))
-                try:
-                    resp = client.submit(params)
-                    ok = bool(resp.get("result"))
-                    err = resp.get("error")
-                    log.info("pool response: result=%s error=%s", resp.get("result"), err)
+                    bus.clear("shares.txt")
+                    processed_lines = 0
                 except Exception as e:
-                    log.warning("submit failed: %s", e)
-            processed_lines = len(lines)
-            # clear the file (keep only lines appended after our read)
-            try:
-                bus.clear("shares.txt")
-                processed_lines = 0
-            except Exception as e:
-                log.warning("clear shares.txt failed: %s", e)
+                    log.warning("clear shares.txt failed: %s", e)
     except KeyboardInterrupt:
         log.info("bye")
     finally:

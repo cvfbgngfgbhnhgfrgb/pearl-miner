@@ -49,26 +49,28 @@ class GitHubBus:
     def put_file(self, path: str, content: bytes, *, message: str | None = None) -> str:
         """Create or update a file. Returns the new blob sha."""
         url = f"{self.API}/repos/{self.repo}/contents/{path}"
-        body, sha = self.get_file(path)
-        payload = {
-            "message": message or f"update {path}",
-            "content": base64.b64encode(content).decode(),
-        }
-        if sha:
-            payload["sha"] = sha
         for attempt in range(self.max_retries):
+            # fetch the current sha fresh on every attempt (avoids stale-sha 409s
+            # when multiple writers race)
+            _, sha = self.get_file(path)
+            payload = {
+                "message": message or f"update {path}",
+                "content": base64.b64encode(content).decode(),
+            }
+            if sha:
+                payload["sha"] = sha
             r = self._session.put(url, json=payload)
             if r.status_code in (200, 201):
                 return r.json()["content"]["sha"]
             if r.status_code == 409 and attempt < self.max_retries - 1:
-                time.sleep(0.4 * (attempt + 1))
+                time.sleep(0.5 * (attempt + 1))
                 continue
             raise RuntimeError(f"PUT {path}: HTTP {r.status_code}: {r.text[:400]}")
         raise RuntimeError(f"PUT {path}: out of retries")
 
     # ------------------------------------------------------------------ #
-    def write_text(self, path: str, text: str) -> str:
-        return self.put_file(path, text.encode("utf-8"))
+    def write_text(self, path: str, text: str, *, message: str | None = None) -> str:
+        return self.put_file(path, text.encode("utf-8"), message=message)
 
     def read_text(self, path: str) -> str | None:
         data, _ = self.get_file(path)
