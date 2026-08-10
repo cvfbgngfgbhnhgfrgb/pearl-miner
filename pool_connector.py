@@ -63,6 +63,9 @@ def parse_args(argv=None):
     p.add_argument("--profile-rank", type=int, default=128, help="noise rank (mining profile)")
     p.add_argument("--poll-jobs", type=float, default=2.0, help="job write interval guard (s)")
     p.add_argument("--poll-shares", type=float, default=3.0, help="shares.txt poll interval (s)")
+    p.add_argument("--stale-seconds", type=float, default=90.0,
+                   help="drop shares whose pool job is older than this many seconds "
+                        "(default 90; pool jobs rotate every ~1 min)")
     p.add_argument("--debug", action="store_true")
     return p.parse_args(argv)
 
@@ -146,9 +149,11 @@ def main(argv=None):
     # ---- 3. job -> jobs.txt ----------------------------------------------
     last_written_job_id = None
     bus_lock = threading.Lock()
+    job_seen: dict[str, float] = {}   # job_id -> received_ts (for stale checks)
 
     def publish_job(job: dict):
         nonlocal last_written_job_id
+        job_seen[job.get("job_id")] = job.get("received_ts", time.time())
         if job.get("job_id") == last_written_job_id:
             return
         payload = {
@@ -177,6 +182,7 @@ def main(argv=None):
 
     # ---- 4. shares.txt -> pool -------------------------------------------
     processed_lines = 0
+    submitted: set[tuple] = set()   # (job_id, nonce, t_rows, t_cols, jackpot_hash)
     log.info("watching shares.txt every %.1fs ...", args.poll_shares)
     try:
         while True:
@@ -195,13 +201,32 @@ def main(argv=None):
                     except Exception:
                         log.warning("skipping unparseable share line: %.120s", ln)
                         continue
+                    jid = share.get("job_id")
+                    # -- stale job? (pool rotates jobs every ~1 min) --------
+                    ts = job_seen.get(jid)
+                    if ts is None:
+                        log.info("dropping share: unknown job %s (not seen by connector)", jid)
+                        continue
+                    age = time.time() - ts
+                    if age > args.stale_seconds:
+                        log.info("dropping stale share job=%s age=%.0fs (>%.0fs)",
+                                 jid, age, args.stale_seconds)
+                        continue
+                    # -- duplicate? (miner restarts replay same nonces) -----
+                    key = (jid, share.get("nonce"), share.get("t_rows"),
+                           share.get("t_cols"), share.get("jackpot_hash"))
+                    if key in submitted:
+                        log.info("dropping duplicate share job=%s nonce=%s", jid, share.get("nonce"))
+                        continue
+                    submitted.add(key)
+                    # -- submit ---------------------------------------------
                     rig = share.get("rig", "rig1")
                     worker = f"{args.wallet}.{rig}"
                     client = next((c for c in clients if c.worker == worker), clients[0])
                     job = client.job or {}
                     params = build_submit_params(job, share)
                     log.info("submitting share rig=%s job=%s nonce=%s",
-                             rig, share.get("job_id"), share.get("nonce"))
+                             rig, jid, share.get("nonce"))
                     try:
                         resp = client.submit(params)
                         log.info("pool response: result=%s error=%s",
