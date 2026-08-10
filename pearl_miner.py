@@ -73,10 +73,35 @@ def make_bus(args):
     if args.bus == "local":
         from github_bus import LocalBus
         return LocalBus(args.local_dir)
-    from github_bus import GitHubBus, get_token_from_env_or_config, resolve_repo
+    GitHubBus, get_token_from_env_or_config, resolve_repo = _import_bus_helpers()
     token = get_token_from_env_or_config()
     repo = resolve_repo(args.repo, token)
     return GitHubBus(token, repo)
+
+
+def _import_bus_helpers():
+    """Import the GitHub bus with a friendly error when the local copy is stale.
+
+    pearl_miner.py and github_bus.py must be updated together — if you only
+    pulled part of the update you get a confusing ImportError; this turns it
+    into clear instructions.
+    """
+    try:
+        from github_bus import (  # noqa: F401
+            GitHubBus,
+            get_token_from_env_or_config,
+            resolve_repo,
+        )
+        return GitHubBus, get_token_from_env_or_config, resolve_repo
+    except ImportError as e:
+        raise RuntimeError(
+            "Your copy of pearl-miner is out of date — github_bus.py is missing "
+            "new functions.\n"
+            "  Fix:  cd /workspace/pearl-miner && git pull\n"
+            "  If that doesn't update the files:\n"
+            "      git fetch origin && git reset --hard origin/main\n"
+            f"  (import error: {e})"
+        )
 
 
 def resolve_target(job: dict, args) -> int | None:
