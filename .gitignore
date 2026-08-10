@@ -1,14 +1,6 @@
-# secrets / local config — NEVER commit tokens
-config.json
-*.token
-.env
-
-# python
 __pycache__/
 *.pyc
-.venv/
-venv/
-*.egg-info/
-
-# noise
+config.json
+.env
+/tmp/
 *.log
