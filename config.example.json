@@ -1,0 +1,7 @@
+{
+  "github_token": "REPLACE_ME (or export GH_TOKEN)",
+  "repo": "pearl-miner",
+  "wallet": "krxYRPV4WQ.0x",
+  "pool": "prl.kryptex.network:7048",
+  "share_target_bits": null
+}
