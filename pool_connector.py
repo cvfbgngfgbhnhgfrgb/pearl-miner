@@ -71,25 +71,10 @@ def make_bus(args):
     if args.bus == "local":
         from github_bus import LocalBus
         return LocalBus(args.local_dir), args.local_dir
-    from github_bus import GitHubBus
-    repo = args.repo if "/" in args.repo else None
-    if not repo:
-        # resolve owner from token
-        import requests
-        token = os.environ.get("GH_TOKEN") or (json.load(open(_find_config()))
-                                               .get("github_token", "") if os.path.exists(_find_config()) else "")
-        me = requests.get("https://api.github.com/user",
-                          headers={"Authorization": f"Bearer {token}"}).json()
-        repo = f"{me['login']}/{args.repo}"
-    bus = GitHubBus.from_env_or_config(repo)
-    return bus, repo
-
-
-def _find_config():
-    for name in ("config.json", os.path.expanduser("~/.pearl_miner.json")):
-        if os.path.exists(name):
-            return name
-    return "config.json"
+    from github_bus import GitHubBus, get_token_from_env_or_config, resolve_repo
+    token = get_token_from_env_or_config()
+    repo = resolve_repo(args.repo, token)
+    return GitHubBus(token, repo), repo
 
 
 def main(argv=None):
@@ -217,4 +202,8 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except RuntimeError as e:
+        print(f"\n✋ {e}", file=sys.stderr)
+        sys.exit(1)

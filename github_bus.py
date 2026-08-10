@@ -14,16 +14,67 @@ Also ships a LocalBus for offline testing (plain files).
 from __future__ import annotations
 
 import base64
+import json
 import os
 import time
 
 import requests
+
+CONFIG_FILES = ("config.json", os.path.expanduser("~/.pearl_miner.json"))
+
+
+def get_token_from_env_or_config() -> str | None:
+    """Token from GH_TOKEN/GITHUB_TOKEN env, then config.json (git-ignored)."""
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if token and token != "REPLACE_ME":
+        return token.strip()
+    for name in CONFIG_FILES:
+        if os.path.exists(name):
+            try:
+                t = json.load(open(name)).get("github_token")
+            except Exception:
+                continue
+            if t and t != "REPLACE_ME":
+                return t.strip()
+    return None
+
+
+def resolve_repo(repo: str, token: str | None) -> str:
+    """'pearl-miner' -> '<owner>/pearl-miner' (owner resolved from the token).
+
+    'owner/repo' passes through untouched. Raises a clear error when the token
+    is missing or rejected by GitHub (instead of a confusing KeyError).
+    """
+    if "/" in repo:
+        return repo
+    if not token:
+        raise RuntimeError(
+            "GitHub token not found.\n"
+            "  Set it with:  export GH_TOKEN=ghp_xxx\n"
+            "  or put it in config.json (github_token) — this file is git-ignored.\n"
+            "  Or run offline:  --bus local --local-dir /tmp/pearl_bus"
+        )
+    me = requests.get(
+        "https://api.github.com/user",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=15,
+    ).json()
+    if "login" not in me:
+        raise RuntimeError(
+            f"GitHub auth failed (is the token valid/expired?): "
+            f"{me.get('message', me)}"
+        )
+    return f"{me['login']}/{repo}"
 
 
 class GitHubBus:
     API = "https://api.github.com"
 
     def __init__(self, token: str, repo: str, *, max_retries: int = 8):
+        if not token or token == "REPLACE_ME":
+            raise RuntimeError(
+                "GitHub token is required — export GH_TOKEN or set github_token in config.json"
+            )
         self.token = token
         self.repo = repo
         self.max_retries = max_retries
@@ -99,12 +150,12 @@ class GitHubBus:
     # ------------------------------------------------------------------ #
     @staticmethod
     def from_env_or_config(repo: str, config: dict | None = None) -> "GitHubBus":
-        token = os.environ.get("GH_TOKEN") or (config or {}).get("github_token")
+        token = get_token_from_env_or_config()
         if not token:
             raise RuntimeError(
-                "GitHub token not found: set GH_TOKEN env var or github_token in config"
+                "GitHub token not found: set GH_TOKEN env var or github_token in config.json"
             )
-        return GitHubBus(token, repo)
+        return GitHubBus(token, resolve_repo(repo, token))
 
 
 class LocalBus:
