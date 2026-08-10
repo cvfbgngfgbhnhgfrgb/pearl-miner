@@ -182,6 +182,7 @@ def main(argv=None):
             lines = [l for l in content.splitlines() if l.strip()]
             if len(lines) <= processed_lines:
                 continue
+            new_lines = lines[processed_lines:]
             with bus_lock:
                 for ln in new_lines:
                     try:
